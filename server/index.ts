@@ -1,7 +1,6 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
-import Anthropic from '@anthropic-ai/sdk';
 import {
   auth,
   chatMessage,
@@ -16,7 +15,7 @@ import {
   type Case,
   type Participant,
 } from './store.ts';
-import { generateReport, mediatorTurn, MediatorError, MOCK_AI } from './mediator.ts';
+import { describeError, generateReport, mediatorTurn, MOCK_AI, MODEL_LABEL } from './mediator.ts';
 import type { Attachment, CaseSummary, CaseView, Relationship } from '../shared/types.ts';
 
 const app = express();
@@ -85,13 +84,7 @@ function requireParticipant(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-function errorMessage(err: unknown): string {
-  if (err instanceof MediatorError) return err.message;
-  if (err instanceof Anthropic.AuthenticationError) return 'The server’s Anthropic API key is invalid.';
-  if (err instanceof Anthropic.RateLimitError) return 'The mediator is busy right now. Please try again in a moment.';
-  if (err instanceof Anthropic.APIError) return `The mediator had a problem (${err.status}). Please try again.`;
-  return 'Something went wrong. Please try again.';
-}
+const errorMessage = describeError;
 
 /** Runs one mediator turn for a participant and applies the result. */
 async function runTurn(c: Case, me: Participant) {
@@ -332,5 +325,5 @@ if (fs.existsSync(dist)) {
 
 const port = Number(process.env.PORT ?? 8787);
 app.listen(port, () => {
-  console.log(`Who's Right API on http://localhost:${port}${MOCK_AI ? '  (mock mediator: set ANTHROPIC_API_KEY for the real one)' : ''}`);
+  console.log(`Who's Right API on http://localhost:${port} using ${MODEL_LABEL}${MOCK_AI ? ' (set GEMINI_API_KEY for the real one)' : ''}`);
 });

@@ -6,7 +6,7 @@ services:
     plan: starter # a persistent disk needs a paid instance; cases are stored on it
     healthCheckPath: /api/health
     envVars:
-      - key: ANTHROPIC_API_KEY
+      - key: GEMINI_API_KEY
         sync: false # you'll be asked for it
     disk:
       name: data

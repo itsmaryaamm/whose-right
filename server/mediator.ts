@@ -1,14 +1,39 @@
 // The AI mediator: talks privately to each person, keeps private notes, and
 // proposes reframed messages ("the concern, not the attack") to pass on.
+//
+// Works with Gemini (GEMINI_API_KEY) or Claude (ANTHROPIC_API_KEY). With
+// neither set, or with MOCK_AI=1, a canned mediator is used so the UI can be tried.
 import Anthropic from '@anthropic-ai/sdk';
+import { ApiError, GoogleGenAI, type Content, type Part as GeminiPart } from '@google/genai';
 import type { Case, Participant } from './store.ts';
 import { readAttachment } from './store.ts';
 import type { Report } from '../shared/types.ts';
 
-const MODEL = process.env.CLAUDE_MODEL ?? 'claude-opus-5-5';
-export const MOCK_AI = process.env.MOCK_AI === '1' || !process.env.ANTHROPIC_API_KEY;
+type Provider = 'gemini' | 'claude' | 'mock';
+export const PROVIDER: Provider =
+  process.env.MOCK_AI === '1'
+    ? 'mock'
+    : process.env.GEMINI_API_KEY
+      ? 'gemini'
+      : process.env.ANTHROPIC_API_KEY
+        ? 'claude'
+        : 'mock';
+export const MOCK_AI = PROVIDER === 'mock';
 
-const client = MOCK_AI ? null : new Anthropic();
+// Flash models work on Gemini's free tier, whose limits are per model, so when one is
+// overloaded or out of quota we try the next. With billing enabled you can set e.g.
+// GEMINI_MODEL=gemini-pro-latest (comma-separate several to keep a fallback chain).
+const GEMINI_MODELS = (process.env.GEMINI_MODEL ?? 'gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-flash-latest,gemini-3.5-flash-lite,gemini-flash-lite-latest')
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+const GEMINI_MODEL = GEMINI_MODELS[0];
+const restUntil = new Map<string, number>();
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL ?? 'claude-opus-5-5';
+export const MODEL_LABEL = PROVIDER === 'gemini' ? GEMINI_MODEL : PROVIDER === 'claude' ? CLAUDE_MODEL : 'mock mediator';
+
+const gemini = PROVIDER === 'gemini' ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+const claude = PROVIDER === 'claude' ? new Anthropic() : null;
 
 const RELATIONSHIP_LABEL: Record<string, string> = {
   couple: 'a couple',
@@ -114,32 +139,98 @@ const REPORT_SCHEMA = {
 
 export class MediatorError extends Error {}
 
-/** Calls Claude with structured JSON output, using server-side refusal fallback when available. */
-async function callJson<T>(
-  system: Anthropic.Beta.BetaTextBlockParam[],
-  messages: Anthropic.Beta.BetaMessageParam[],
-  schema: Record<string, unknown>,
-  effort: 'medium' | 'high',
-): Promise<T> {
-  if (!client) throw new MediatorError('AI is not configured');
+/** Provider-neutral conversation, converted to Gemini or Claude format at call time. */
+type Part = { type: 'text'; text: string } | { type: 'file'; mime: string; name: string; data: string };
+interface Turn {
+  role: 'user' | 'assistant';
+  parts: Part[];
+}
+
+/**
+ * Asks the model for JSON matching `schema`. `system` is the stable instructions;
+ * `context` is the per-request case state.
+ */
+async function callJson<T>(system: string, context: string, turns: Turn[], schema: Record<string, unknown>, effort: 'medium' | 'high'): Promise<T> {
+  const text = PROVIDER === 'gemini' ? await callGemini(system, context, turns, schema) : await callClaude(system, context, turns, schema, effort);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new MediatorError('The mediator gave a garbled answer. Please try again.');
+  }
+}
+
+async function callGemini(system: string, context: string, turns: Turn[], schema: Record<string, unknown>): Promise<string> {
+  if (!gemini) throw new MediatorError('AI is not configured');
+  const contents: Content[] = turns.map((t) => ({
+    role: t.role === 'assistant' ? 'model' : 'user',
+    parts: t.parts.map(
+      (p): GeminiPart => (p.type === 'text' ? { text: p.text } : { inlineData: { mimeType: p.mime, data: p.data } }),
+    ),
+  }));
+  const config = {
+    systemInstruction: context ? `${system}\n\n${context}` : system,
+    responseMimeType: 'application/json',
+    responseJsonSchema: schema,
+  };
+  // Overloaded (5xx) or out of quota (429): wait briefly, then move on to the next model.
+  // Models that recently failed are rested for a while so we don't waste a call on them.
+  let res;
+  let lastErr: unknown;
+  const now = Date.now();
+  const ready = GEMINI_MODELS.filter((m) => (restUntil.get(m) ?? 0) <= now);
+  for (const model of ready.length ? ready : GEMINI_MODELS) {
+    try {
+      res = await gemini.models.generateContent({ model, contents, config });
+      break;
+    } catch (err) {
+      const status = err instanceof ApiError ? err.status : 0;
+      if (!(status === 429 || status === 404 || status >= 500)) throw err;
+      lastErr = err;
+      // Out of quota: rest 15 min (free-tier daily caps reset slowly). Overloaded: 1 min.
+      restUntil.set(model, Date.now() + (status === 429 ? 15 * 60_000 : status === 404 ? 24 * 3600_000 : 60_000));
+      console.warn(`Gemini ${model} unavailable (${status}), trying next model`);
+    }
+  }
+  if (!res) throw lastErr;
+  if (res.promptFeedback?.blockReason) {
+    throw new MediatorError("The mediator couldn't respond to that. Try rephrasing, or reach out to someone you trust.");
+  }
+  const finish = res.candidates?.[0]?.finishReason;
+  if (finish === 'MAX_TOKENS') throw new MediatorError('The response was cut off. Please try again.');
+  if (!res.text) {
+    throw new MediatorError(
+      finish === 'SAFETY' ? "The mediator couldn't respond to that. Try rephrasing, or reach out to someone you trust." : 'Empty response from the mediator.',
+    );
+  }
+  return res.text;
+}
+
+async function callClaude(system: string, context: string, turns: Turn[], schema: Record<string, unknown>, effort: 'medium' | 'high'): Promise<string> {
+  if (!claude) throw new MediatorError('AI is not configured');
+  const systemBlocks: Anthropic.Beta.BetaTextBlockParam[] = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+  if (context) systemBlocks.push({ type: 'text', text: context });
+  const messages: Anthropic.Beta.BetaMessageParam[] = turns.map((t) => ({
+    role: t.role,
+    content: t.parts.map((p): Anthropic.Beta.BetaContentBlockParam => {
+      if (p.type === 'text') return { type: 'text', text: p.text };
+      if (p.mime === 'application/pdf') return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: p.data }, title: p.name };
+      return { type: 'image', source: { type: 'base64', media_type: p.mime as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif', data: p.data } };
+    }),
+  }));
   const base = {
-    model: MODEL,
+    model: CLAUDE_MODEL,
     max_tokens: 16000,
-    system,
+    system: systemBlocks,
     messages,
     output_config: { effort, format: { type: 'json_schema' as const, schema } },
   };
   let res: Anthropic.Beta.BetaMessage;
   try {
-    res = await client.beta.messages.create({
-      ...base,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
-    });
+    res = await claude.beta.messages.create({ ...base, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
   } catch (err) {
     // If the fallback beta isn't available on this account, retry plainly.
     if (err instanceof Anthropic.BadRequestError && /fallback/i.test(err.message)) {
-      res = await client.beta.messages.create(base);
+      res = await claude.beta.messages.create(base);
     } else {
       throw err;
     }
@@ -150,7 +241,23 @@ async function callJson<T>(
   if (res.stop_reason === 'max_tokens') throw new MediatorError('The response was cut off. Please try again.');
   const text = res.content.find((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')?.text;
   if (!text) throw new MediatorError('Empty response from the mediator.');
-  return JSON.parse(text) as T;
+  return text;
+}
+
+/** A short, user-facing explanation for any error thrown while calling the model. */
+export function describeError(err: unknown): string {
+  if (err instanceof MediatorError) return err.message;
+  if (err instanceof ApiError) {
+    if (err.status === 429) return 'The mediator hit its Gemini usage limit. Please try again in a minute (or enable billing on the Gemini key).';
+    if (err.status === 503) return 'Gemini is overloaded right now. Please try again in a moment.';
+    if (err.status === 400 && /api key/i.test(err.message)) return 'The server’s Gemini API key is invalid.';
+    if (err.status === 401 || err.status === 403) return 'The server’s Gemini API key was rejected.';
+    return `The mediator had a problem (${err.status}). Please try again.`;
+  }
+  if (err instanceof Anthropic.AuthenticationError) return 'The server’s Anthropic API key is invalid.';
+  if (err instanceof Anthropic.RateLimitError) return 'The mediator is busy right now. Please try again in a moment.';
+  if (err instanceof Anthropic.APIError) return `The mediator had a problem (${err.status}). Please try again.`;
+  return 'Something went wrong. Please try again.';
 }
 
 function caseContext(c: Case, me: Participant): string {
@@ -179,8 +286,8 @@ function caseContext(c: Case, me: Participant): string {
   return lines.join('\n');
 }
 
-function attachmentBlocks(c: Case, msg: Participant['chat'][number]): Anthropic.Beta.BetaContentBlockParam[] {
-  const blocks: Anthropic.Beta.BetaContentBlockParam[] = [];
+function attachmentParts(c: Case, msg: Participant['chat'][number]): Part[] {
+  const parts: Part[] = [];
   for (const a of msg.attachments ?? []) {
     let data: Buffer;
     try {
@@ -188,50 +295,46 @@ function attachmentBlocks(c: Case, msg: Participant['chat'][number]): Anthropic.
     } catch {
       continue;
     }
-    if (a.mime === 'application/pdf') {
-      blocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: data.toString('base64') }, title: a.name });
-    } else if (a.mime === 'text/plain') {
-      blocks.push({ type: 'text', text: `[Attached text file "${a.name}"]\n${data.toString('utf8').slice(0, 50000)}` });
+    if (a.mime === 'text/plain') {
+      parts.push({ type: 'text', text: `[Attached text file "${a.name}"]\n${data.toString('utf8').slice(0, 50000)}` });
     } else {
-      blocks.push({
-        type: 'image',
-        source: { type: 'base64', media_type: a.mime as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif', data: data.toString('base64') },
-      });
+      parts.push({ type: 'file', mime: a.mime, name: a.name, data: data.toString('base64') });
     }
   }
-  return blocks;
+  return parts;
 }
 
 /** Turns this person's private chat into an alternating user/assistant transcript. */
-function transcript(c: Case, me: Participant): Anthropic.Beta.BetaMessageParam[] {
-  const out: Anthropic.Beta.BetaMessageParam[] = [];
-  const push = (role: 'user' | 'assistant', blocks: Anthropic.Beta.BetaContentBlockParam[]) => {
+function transcript(c: Case, me: Participant): Turn[] {
+  const out: Turn[] = [];
+  const push = (role: Turn['role'], parts: Part[]) => {
     const last = out[out.length - 1];
-    if (last && last.role === role && Array.isArray(last.content)) last.content.push(...blocks);
-    else out.push({ role, content: blocks });
+    if (last && last.role === role) last.parts.push(...parts);
+    else out.push({ role, parts });
   };
+  const text = (t: string): Part[] => [{ type: 'text', text: t }];
   for (const m of me.chat) {
     switch (m.kind) {
       case 'user':
-        push('user', [...attachmentBlocks(c, m), { type: 'text', text: m.text || '(sent an attachment)' }]);
+        push('user', [...attachmentParts(c, m), ...text(m.text || '(sent an attachment)')]);
         break;
       case 'ai':
-        push('assistant', [{ type: 'text', text: m.text }]);
+        push('assistant', text(m.text));
         break;
       case 'relay-in':
-        push('user', [{ type: 'text', text: `[App notice: a relayed message from ${m.fromName} was delivered to ${me.name}: "${m.text}"]` }]);
+        push('user', text(`[App notice: a relayed message from ${m.fromName} was delivered to ${me.name}: "${m.text}"]`));
         break;
       case 'relay-out':
-        push('user', [{ type: 'text', text: `[App notice: ${me.name} approved and sent this relay: "${m.text}"]` }]);
+        push('user', text(`[App notice: ${me.name} approved and sent this relay: "${m.text}"]`));
         break;
       case 'system':
-        push('user', [{ type: 'text', text: `[App notice: ${m.text}]` }]);
+        push('user', text(`[App notice: ${m.text}]`));
         break;
     }
   }
-  if (out[0]?.role === 'assistant') out.unshift({ role: 'user', content: [{ type: 'text', text: '[App notice: session started]' }] });
+  if (out[0]?.role === 'assistant') out.unshift({ role: 'user', parts: text('[App notice: session started]') });
   if (out[out.length - 1]?.role === 'assistant') {
-    push('user', [{ type: 'text', text: '[App notice: no new message; respond to the latest developments if useful]' }]);
+    push('user', text('[App notice: no new message; respond to the latest developments if useful]'));
   }
   return out;
 }
@@ -244,15 +347,7 @@ export interface TurnResult {
 
 export async function mediatorTurn(c: Case, me: Participant): Promise<TurnResult> {
   if (MOCK_AI) return mockTurn(c, me);
-  return callJson<TurnResult>(
-    [
-      { type: 'text', text: MEDIATOR_PROMPT, cache_control: { type: 'ephemeral' } },
-      { type: 'text', text: caseContext(c, me) },
-    ],
-    transcript(c, me),
-    TURN_SCHEMA,
-    'medium',
-  );
+  return callJson<TurnResult>(MEDIATOR_PROMPT, caseContext(c, me), transcript(c, me), TURN_SCHEMA, 'medium');
 }
 
 const REPORT_PROMPT = `You are the neutral mediator inside "Who's Right". You have spoken privately with each party in a conflict and are now writing a fair, neutral analysis that ALL parties will read together.
@@ -273,8 +368,9 @@ export async function generateReport(c: Case): Promise<Report> {
   ctx.push('\n=== Shared bridge (messages actually relayed between the parties) ===');
   for (const b of c.bridge) ctx.push(`[${b.fromName}] ${b.text}`);
   const r = await callJson<Omit<Report, 'generatedAt'>>(
-    [{ type: 'text', text: REPORT_PROMPT }],
-    [{ role: 'user', content: ctx.join('\n') + '\n\nWrite the neutral analysis now.' }],
+    REPORT_PROMPT,
+    '',
+    [{ role: 'user', parts: [{ type: 'text', text: ctx.join('\n') + '\n\nWrite the neutral analysis now.' }] }],
     REPORT_SCHEMA,
     'high',
   );

@@ -241,7 +241,7 @@ function Talk({
           </svg>
           Only you and the mediator can see this conversation.
         </div>
-        {view.mockAi && <div className="mock-note">Demo mode: the server has no Anthropic API key, so the mediator gives canned replies.</div>}
+        {view.mockAi && <div className="mock-note">Demo mode: the server has no AI key set, so the mediator gives canned replies.</div>}
         {messages.map((m) => (
           <Message key={m.id} m={m} caseId={view.id} />
         ))}

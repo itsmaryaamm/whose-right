@@ -25,13 +25,13 @@ Raw emotion → AI listens & probes → underlying concern → respectful messag
 
 ## Run it locally
 
-You need Node 22+ and an [Anthropic API key](https://console.anthropic.com).
+You need Node 22+ and a free [Gemini API key](https://aistudio.google.com/apikey).
 
 ```bash
 git clone https://github.com/itsmaryaamm/whose-right && cd whose-right
 npm install
 cp .env.example .env              # then put your key in .env
-export $(cat .env | xargs)        # or set ANTHROPIC_API_KEY however you like
+export $(grep -v '^#' .env | xargs)
 npm run dev
 ```
 
@@ -43,13 +43,13 @@ Open http://localhost:5173. To try it with a second person on the same computer,
 
 The app is a single Node server (API + web app) that stores data in `DATA_DIR` (default `./data`).
 
-**Render (easiest):** in Render choose **New → Blueprint**, pick the repo, and paste your `ANTHROPIC_API_KEY` when asked. `render.yaml` sets up the service and a 1 GB disk for case data.
+**Render (easiest):** in Render choose **New → Blueprint**, pick the repo, and paste your `GEMINI_API_KEY` when asked. `render.yaml` sets up the service and a 1 GB disk for case data.
 
 **Anywhere with Docker** (Railway, Fly.io, a VPS):
 
 ```bash
 docker build -t whos-right .
-docker run -p 8787:8787 -e ANTHROPIC_API_KEY=sk-ant-... -v whosright-data:/data whos-right
+docker run -p 8787:8787 -e GEMINI_API_KEY=your-key -v whosright-data:/data whos-right
 ```
 
 Use HTTPS in production, since invite links and private links carry access keys.
@@ -58,13 +58,14 @@ Use HTTPS in production, since invite links and private links carry access keys.
 
 | Part | Where |
 |---|---|
-| Mediator prompts, Claude calls, structured JSON output | `server/mediator.ts` |
+| Mediator prompts, Gemini/Claude calls, structured JSON output | `server/mediator.ts` |
 | HTTP API, relays, analysis, agreement | `server/index.ts` |
 | JSON-file storage and attachments | `server/store.ts` |
 | Phone UI (React + Vite) | `src/` |
 | Animated characters (Arrive / Listen / Connect) | `src/components/Blob.tsx` |
 
-- Model: `claude-opus-5-5` (override with `CLAUDE_MODEL`). Each mediator turn returns `{ reply, notes, relay }` via structured outputs. Server-side refusal fallback (`fallbacks: "default"`) is enabled.
+- AI: **Gemini** when `GEMINI_API_KEY` is set (otherwise Claude via `ANTHROPIC_API_KEY`). Each mediator turn returns `{ reply, notes, relay }` as structured JSON.
+- **Free tier:** Gemini’s free tier allows roughly 20 requests per model per day. Each message you send uses one request, and so does each analysis. So the app works through a chain of Flash and Flash-Lite models, resting any model that’s out of quota or overloaded. That gives you well over 100 messages a day for free. If you ever enable billing, set `GEMINI_MODEL=gemini-pro-latest` for the strongest mediator.
 - Privacy model: each participant gets a secret token stored in their browser. The API only ever returns a person’s own chat, the shared relays, and the analysis. Other people’s chats and the mediator’s notes never leave the server.
 - Storage is a single JSON file. That’s fine for personal use and small groups; move to Postgres/SQLite if it grows.
 
