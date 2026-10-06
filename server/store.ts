@@ -170,12 +170,32 @@ function fileRepo(dir: string): Repo {
 /** On hosted serverless platforms there's no disk to fall back to, so explain what's missing. */
 function missingDatabase(): Repo {
   const fail = async (): Promise<never> => {
-    throw new Refusal('The database isn’t connected yet. In Vercel, open Storage, connect a free Neon database, then redeploy.', 503);
+    throw new Refusal(
+      'The database isn’t connected yet. In Vercel: Storage → Neon → Connect Project (tick Production), then Deployments → ⋯ → Redeploy.',
+      503,
+    );
   };
   return { get: fail, getMany: fail, findByCode: fail, insert: fail, update: fail, putAttachment: fail, getAttachment: fail };
 }
 
-const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+/**
+ * Finds the Postgres connection string. Vercel's Neon integration may add a custom
+ * prefix (e.g. STORAGE_DATABASE_URL), so besides the usual names we accept any
+ * *_DATABASE_URL / *_POSTGRES_URL variable, preferring pooled connections.
+ */
+function findDatabaseUrl(): string | undefined {
+  const env = process.env;
+  const direct = env.DATABASE_URL || env.POSTGRES_URL;
+  if (direct) return direct;
+  const isPg = (v: string | undefined) => Boolean(v && /^postgres(ql)?:\/\//.test(v));
+  const keys = Object.keys(env).filter((k) => /(DATABASE|POSTGRES)_URL$/.test(k) && isPg(env[k]));
+  const anyPg = Object.keys(env).filter((k) => /URL/.test(k) && isPg(env[k]));
+  const pick = (ks: string[]) => ks.find((k) => !/UNPOOLED|NON_POOLING|NO_SSL/.test(k)) ?? ks[0];
+  const key = pick(keys) ?? pick(anyPg);
+  return key ? env[key] : undefined;
+}
+
+const DATABASE_URL = findDatabaseUrl();
 export const STORAGE = DATABASE_URL ? 'postgres' : 'file';
 const repo: Repo = DATABASE_URL
   ? postgresRepo(DATABASE_URL)
