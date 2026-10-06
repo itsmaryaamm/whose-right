@@ -102,14 +102,42 @@ export const api = {
   privateLink: (caseId: string) => `${location.origin}/c/${caseId}#t=${tokenFor(caseId) ?? ''}`,
 };
 
-export function fileToUpload(file: File): Promise<UploadFile> {
-  return new Promise((resolve, reject) => {
+const readDataUrl = (blob: Blob) =>
+  new Promise<string>((resolve, reject) => {
     const r = new FileReader();
-    r.onload = () => {
-      const s = String(r.result);
-      resolve({ name: file.name, mime: file.type || 'application/octet-stream', data: s.slice(s.indexOf(',') + 1) });
-    };
+    r.onload = () => resolve(String(r.result));
     r.onerror = () => reject(r.error);
-    r.readAsDataURL(file);
+    r.readAsDataURL(blob);
   });
+
+/** Photos are shrunk to at most 1600px so they upload fast and stay small. */
+async function shrinkImage(file: File): Promise<Blob> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not read image'))), 'image/jpeg', 0.82));
+}
+
+export const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
+
+export async function fileToUpload(file: File): Promise<UploadFile> {
+  let blob: Blob = file;
+  let mime = file.type || 'application/octet-stream';
+  let name = file.name;
+  if (/^image\/(jpeg|png|webp|heic|heif)$/.test(mime) || (!file.type && /\.(heic|heif)$/i.test(name))) {
+    try {
+      blob = await shrinkImage(file);
+      mime = 'image/jpeg';
+      name = name.replace(/\.\w+$/, '') + '.jpg';
+    } catch {
+      /* fall back to the original file */
+    }
+  }
+  if (blob.size > MAX_UPLOAD_BYTES) throw new Error(`“${file.name}” is too big (max 3 MB).`);
+  const url = await readDataUrl(blob);
+  return { name, mime, data: url.slice(url.indexOf(',') + 1) };
 }

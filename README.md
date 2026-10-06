@@ -21,7 +21,7 @@ Raw emotion → AI listens & probes → underlying concern → respectful messag
 - **Cross-checking.** The mediator keeps confidential notes on each person. It uses them to spot conflicting accounts, misunderstandings and common ground, without quoting anyone’s private words.
 - **Neutral analysis.** Anyone can ask for one. It covers what you agree happened, what’s still disputed, what each person is really concerned about, where misunderstandings happened, how each person contributed, what seems reasonable, common ground, possible compromises, and a proposed resolution with next steps.
 - **Agreement.** Each person taps “I agree” or “Not yet”. When everyone agrees, the case is marked resolved.
-- **Phone-first.** It’s a web app you can add to your home screen. Cases are remembered on your device, and a private link lets you open a case on another device.
+- **Works like an app.** Install it to your home screen and it opens full-screen with its own icon. Cases are remembered on your phone, and a private link lets you open a case on another device.
 
 ## Run it locally
 
@@ -39,35 +39,39 @@ Open http://localhost:5173. To try it with a second person on the same computer,
 
 **No API key yet?** Run `npm run dev:mock` (or start without a key). The mediator gives canned replies so you can click through the whole flow.
 
-## Put it online (so the other person can join)
+## Put it online for free (about 5 minutes, works from your phone)
 
-The app is a single Node server (API + web app) that stores data in `DATA_DIR` (default `./data`).
+Everything here is free: **Vercel** hosts the app, **Neon** stores the cases, and **Gemini** is the AI. No credit card is needed.
 
-**Render (easiest):** in Render choose **New → Blueprint**, pick the repo, and paste your `GEMINI_API_KEY` when asked. `render.yaml` sets up the service and a 1 GB disk for case data.
+1. **Deploy.** Open **[vercel.com/new](https://vercel.com/new)** and sign in with GitHub. Find **whose-right** in the list and tap **Import**. Open **Environment Variables**, add `GEMINI_API_KEY` with your key, and tap **Deploy**.
+2. **Add the free database.** When the deploy finishes, open the project, go to **Storage → Create Database → Neon**, choose the **Free** plan, and connect it to the project. This adds `DATABASE_URL` for you.
+3. **Redeploy.** Go to **Deployments**, tap **⋯** on the latest one, then **Redeploy**.
 
-**Anywhere with Docker** (Railway, Fly.io, a VPS):
+Your link is the domain Vercel shows, e.g. **`https://whose-right.vercel.app`**. Open it on your phone, tap **Share → Add to Home Screen** (iPhone) or **Install** (Android), and send the link to your family.
 
-```bash
-docker build -t whos-right .
-docker run -p 8787:8787 -e GEMINI_API_KEY=your-key -v whosright-data:/data whos-right
-```
+**Free-tier limits** are plenty for a family:
+- Vercel Hobby: 100 GB bandwidth/month.
+- Neon Free: 0.5 GB of storage, and it sleeps when idle (the first request after a while takes a second longer).
+- Gemini free tier: about 20 requests per model per day, stretched across several models (see below).
 
-Use HTTPS in production, since invite links and private links carry access keys.
+**Other hosts:** `render.yaml` deploys the same app on Render’s free plan (set `GEMINI_API_KEY` and `DATABASE_URL`). The Dockerfile runs it anywhere.
 
 ## How it’s built
 
 | Part | Where |
 |---|---|
 | Mediator prompts, Gemini/Claude calls, structured JSON output | `server/mediator.ts` |
-| HTTP API, relays, analysis, agreement | `server/index.ts` |
-| JSON-file storage and attachments | `server/store.ts` |
+| HTTP API, relays, analysis, agreement | `server/app.ts` |
+| Storage: Postgres (Neon) when `DATABASE_URL` is set, JSON file locally | `server/store.ts` |
+| Vercel serverless entry point | `api/index.ts`, `vercel.json` |
+| Installable app: icons, offline shell, install prompt | `public/`, `src/components/InstallBanner.tsx` |
 | Phone UI (React + Vite) | `src/` |
 | Animated characters (Arrive / Listen / Connect) | `src/components/Blob.tsx` |
 
 - AI: **Gemini** when `GEMINI_API_KEY` is set (otherwise Claude via `ANTHROPIC_API_KEY`). Each mediator turn returns `{ reply, notes, relay }` as structured JSON.
 - **Free tier:** Gemini’s free tier allows roughly 20 requests per model per day. Each message you send uses one request, and so does each analysis. So the app works through a chain of Flash and Flash-Lite models, resting any model that’s out of quota or overloaded. That gives you well over 100 messages a day for free. If you ever enable billing, set `GEMINI_MODEL=gemini-pro-latest` for the strongest mediator.
 - Privacy model: each participant gets a secret token stored in their browser. The API only ever returns a person’s own chat, the shared relays, and the analysis. Other people’s chats and the mediator’s notes never leave the server.
-- Storage is a single JSON file. That’s fine for personal use and small groups; move to Postgres/SQLite if it grows.
+- Each case is one JSON document in Postgres with a version number. Updates re-read and retry if two people act at once, so nothing is lost.
 
 ## Notes
 

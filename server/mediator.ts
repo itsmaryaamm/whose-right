@@ -5,9 +5,9 @@
 // neither set, or with MOCK_AI=1, a canned mediator is used so the UI can be tried.
 import Anthropic from '@anthropic-ai/sdk';
 import { ApiError, GoogleGenAI, type Content, type Part as GeminiPart } from '@google/genai';
-import type { Case, Participant } from './store.ts';
-import { readAttachment } from './store.ts';
-import type { Report } from '../shared/types.ts';
+import type { Case, Participant } from './store.js';
+import { readAttachment } from './store.js';
+import type { Report } from '../shared/types.js';
 
 type Provider = 'gemini' | 'claude' | 'mock';
 export const PROVIDER: Provider =
@@ -286,15 +286,11 @@ function caseContext(c: Case, me: Participant): string {
   return lines.join('\n');
 }
 
-function attachmentParts(c: Case, msg: Participant['chat'][number]): Part[] {
+async function attachmentParts(c: Case, msg: Participant['chat'][number]): Promise<Part[]> {
   const parts: Part[] = [];
   for (const a of msg.attachments ?? []) {
-    let data: Buffer;
-    try {
-      data = readAttachment(c.id, a.id);
-    } catch {
-      continue;
-    }
+    const data = await readAttachment(c.id, a.id);
+    if (!data) continue;
     if (a.mime === 'text/plain') {
       parts.push({ type: 'text', text: `[Attached text file "${a.name}"]\n${data.toString('utf8').slice(0, 50000)}` });
     } else {
@@ -305,7 +301,7 @@ function attachmentParts(c: Case, msg: Participant['chat'][number]): Part[] {
 }
 
 /** Turns this person's private chat into an alternating user/assistant transcript. */
-function transcript(c: Case, me: Participant): Turn[] {
+async function transcript(c: Case, me: Participant): Promise<Turn[]> {
   const out: Turn[] = [];
   const push = (role: Turn['role'], parts: Part[]) => {
     const last = out[out.length - 1];
@@ -316,7 +312,7 @@ function transcript(c: Case, me: Participant): Turn[] {
   for (const m of me.chat) {
     switch (m.kind) {
       case 'user':
-        push('user', [...attachmentParts(c, m), ...text(m.text || '(sent an attachment)')]);
+        push('user', [...(await attachmentParts(c, m)), ...text(m.text || '(sent an attachment)')]);
         break;
       case 'ai':
         push('assistant', text(m.text));
@@ -347,7 +343,7 @@ export interface TurnResult {
 
 export async function mediatorTurn(c: Case, me: Participant): Promise<TurnResult> {
   if (MOCK_AI) return mockTurn(c, me);
-  return callJson<TurnResult>(MEDIATOR_PROMPT, caseContext(c, me), transcript(c, me), TURN_SCHEMA, 'medium');
+  return callJson<TurnResult>(MEDIATOR_PROMPT, caseContext(c, me), await transcript(c, me), TURN_SCHEMA, 'medium');
 }
 
 const REPORT_PROMPT = `You are the neutral mediator inside "Who's Right". You have spoken privately with each party in a conflict and are now writing a fair, neutral analysis that ALL parties will read together.

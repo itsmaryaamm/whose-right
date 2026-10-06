@@ -1,11 +1,13 @@
 import { Pair } from '../components/Blob.tsx';
 import { CaseList, useCaseSummaries } from '../components/CaseList.tsx';
 import { navigate } from '../router.ts';
+import { InstallBanner } from '../components/InstallBanner.tsx';
 
 export function Home() {
   const cases = useCaseSummaries();
   return (
     <div className="screen home">
+      <InstallBanner />
       <h1 className="brand">Who’s right?</h1>
       <Pair moment="arrive" size={150} />
       <p className="tagline">Say it how it feels. We’ll pass on what it means.</p>

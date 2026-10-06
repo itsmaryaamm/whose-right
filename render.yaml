@@ -1,14 +1,13 @@
-# One-click deploy on Render (https://render.com): New → Blueprint → pick this repo.
+# Alternative to Vercel: Render's free plan (New → Blueprint → pick this repo).
+# Use a free Neon database for DATABASE_URL; free Render instances have no disk.
 services:
   - type: web
-    name: whos-right
+    name: whose-right
     runtime: docker
-    plan: starter # a persistent disk needs a paid instance; cases are stored on it
+    plan: free
     healthCheckPath: /api/health
     envVars:
       - key: GEMINI_API_KEY
-        sync: false # you'll be asked for it
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
+        sync: false
+      - key: DATABASE_URL
+        sync: false

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, fileToUpload, tokens, type UploadFile } from '../api.ts';
+import { api, fileToUpload, MAX_UPLOAD_BYTES, tokens, type UploadFile } from '../api.ts';
 import { navigate } from '../router.ts';
 import { Blob, Pair } from '../components/Blob.tsx';
 import { Avatar } from '../components/CaseList.tsx';
@@ -195,8 +195,12 @@ function Talk({
     let uploads: UploadFile[] = [];
     try {
       uploads = await Promise.all(files.map(fileToUpload));
-    } catch {
-      setError('Couldn’t read that file.');
+    } catch (e) {
+      setError((e as Error).message || 'Couldn’t read that file.');
+      return;
+    }
+    if (uploads.reduce((n, u) => n + u.data.length * 0.75, 0) > MAX_UPLOAD_BYTES) {
+      setError('Those files are too big together (max 3 MB). Send them one at a time.');
       return;
     }
     const optimistic: ChatMessage = {
@@ -224,8 +228,9 @@ function Talk({
 
   function addFiles(list: FileList | null) {
     if (!list) return;
-    const ok = Array.from(list).filter((f) => f.size <= 8 * 1024 * 1024);
-    if (ok.length < list.length) setError('Files must be under 8 MB.');
+    // Photos get shrunk before upload, so only other files need checking here.
+    const ok = Array.from(list).filter((f) => f.type.startsWith('image/') || f.size <= MAX_UPLOAD_BYTES);
+    if (ok.length < list.length) setError('PDFs and text files must be under 3 MB.');
     setFiles((prev) => [...prev, ...ok].slice(0, 5));
   }
 
@@ -280,7 +285,7 @@ function Talk({
             type="file"
             hidden
             multiple
-            accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain"
+            accept="image/*,application/pdf,text/plain"
             onChange={(e) => {
               addFiles(e.target.files);
               e.target.value = '';

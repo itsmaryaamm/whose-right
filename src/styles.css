@@ -1007,3 +1007,42 @@ textarea:focus {
 .resolved-banner p {
   margin: 4px 0 0;
 }
+
+/* ---- Install banner ---- */
+.install-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--card);
+  border: 2px solid var(--ink);
+  border-radius: var(--radius);
+  padding: 10px 10px 10px 12px;
+  margin-top: 4px;
+  position: relative;
+}
+.install-banner img {
+  border-radius: 11px;
+  flex: none;
+}
+.install-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+.install-text svg {
+  vertical-align: -3px;
+}
+.install-banner .btn {
+  padding: 8px 14px;
+}
+.install-close {
+  border: 0;
+  background: none;
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 4px 6px;
+  color: var(--muted);
+  align-self: flex-start;
+}
