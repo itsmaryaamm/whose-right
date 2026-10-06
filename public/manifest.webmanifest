@@ -1,0 +1,9 @@
+{
+  "name": "Who's Right",
+  "short_name": "Who's Right",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F7F9F5",
+  "theme_color": "#F7F9F5",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
