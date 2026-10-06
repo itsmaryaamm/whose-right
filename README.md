@@ -28,7 +28,7 @@ Raw emotion → AI listens & probes → underlying concern → respectful messag
 You need Node 22+ and an [Anthropic API key](https://console.anthropic.com).
 
 ```bash
-cd whos-right
+git clone https://github.com/itsmaryaamm/whose-right && cd whose-right
 npm install
 cp .env.example .env              # then put your key in .env
 export $(cat .env | xargs)        # or set ANTHROPIC_API_KEY however you like
@@ -43,7 +43,7 @@ Open http://localhost:5173. To try it with a second person on the same computer,
 
 The app is a single Node server (API + web app) that stores data in `DATA_DIR` (default `./data`).
 
-**Render (easiest):** push this folder to its own GitHub repo, then in Render choose **New → Blueprint**, pick the repo, and paste your `ANTHROPIC_API_KEY` when asked. `render.yaml` sets up the service and a 1 GB disk for case data.
+**Render (easiest):** in Render choose **New → Blueprint**, pick the repo, and paste your `ANTHROPIC_API_KEY` when asked. `render.yaml` sets up the service and a 1 GB disk for case data.
 
 **Anywhere with Docker** (Railway, Fly.io, a VPS):
 
